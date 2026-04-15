@@ -331,10 +331,11 @@ function layoutTree(expr: Expr, path: Path, pathKey: string): Layout {
   const left = layoutTree(expr.left, [...path, 'L'], pathKey + 'L');
   const right = layoutTree(expr.right, [...path, 'R'], pathKey + 'R');
   const width = left.width + right.width + GAP_X;
-  left.x = 0;
-  right.x = left.width + GAP_X;
+  // Shift the whole subtree (root + descendants). Previously only the subtree
+  // root's x was overwritten, which left descendants at their local-origin x
+  // and caused overlaps starting from depth 4.
   shift(left, 0, GAP_Y);
-  shift(right, 0, GAP_Y);
+  shift(right, left.width + GAP_X, GAP_Y);
   return {
     expr,
     path,
