@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>eml playground</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <h1>eml playground</h1>
+      <p class="tagline">
+        <code>f(x, y) = e<sup>x</sup> − ln y</code> ひとつで初等関数を全部作る遊び場
+      </p>
+      <p class="paper">
+        元ネタ:
+        <a href="https://arxiv.org/abs/2603.21852v2" target="_blank" rel="noopener">
+          A. Odrzywołek, <em>All elementary functions from a single binary operator</em> (arXiv:2603.21852v2)
+        </a>
+      </p>
+    </header>
+
+    <main class="grid">
+      <section id="evaluator" class="panel"></section>
+      <section id="gallery" class="panel"></section>
+      <section id="plot" class="panel"></section>
+      <section id="tree" class="panel"></section>
+    </main>
+
+    <footer class="site-footer">
+      <p>
+        構文: <code>1</code> | <code>x</code> | <code>(f &lt;expr&gt; &lt;expr&gt;)</code>
+        — 例: <code>(f (f 1 1) 1)</code>, <code>(f x 1)</code>
+      </p>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
