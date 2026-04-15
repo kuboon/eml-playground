@@ -1,4 +1,7 @@
-// Visual tree builder. SVG-based, drag-free: click to mutate.
+// Visual tree builder. SVG-based.
+// - Click a node (or press Enter) to open a popover and pick 1 / x / f.
+// - Arrow keys navigate the tree, 1/x/f keys apply directly.
+// - Ctrl/Cmd+Z / Shift+Z for undo/redo.
 
 import type { Expr } from '../lib/ast.ts';
 import { containsVar, f, one, varX } from '../lib/ast.ts';
@@ -10,80 +13,323 @@ const NODE_W = 56;
 const NODE_H = 28;
 const GAP_X = 12;
 const GAP_Y = 48;
+const HISTORY_LIMIT = 100;
+
+type Step = 'L' | 'R';
+type Path = readonly Step[];
+type NodeKind = 'one' | 'var' | 'f';
 
 type Layout = {
   expr: Expr;
   path: Path;
+  pathKey: string;
   x: number;
   y: number;
   width: number;
   children?: Layout[];
 };
 
-type Step = 'L' | 'R';
-type Path = readonly Step[];
-
 export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
   root.innerHTML = `
     <h2>ツリー</h2>
     <p class="hint">
-      葉 (<code>1</code> / <code>x</code>) をクリックするとその場で 3 つから選択、
-      <code>f</code> ノードをクリックすると葉 <code>1</code> に折り畳みます。
+      ノードをクリック (または <kbd>Enter</kbd>) で <code>1</code> / <code>x</code> / <code>f</code> を選択。
+      矢印キーで移動、<code>1</code>/<code>x</code>/<code>f</code> キーで直接変更、
+      <kbd>Ctrl</kbd>+<kbd>Z</kbd> で取り消し。
     </p>
-    <label class="field">
-      <span>x = </span>
-      <input id="tree-x" type="number" step="0.1" value="1" />
-    </label>
+    <div class="tree-controls">
+      <label class="field">
+        <span>x = </span>
+        <input id="tree-x" type="number" step="0.1" value="1" />
+      </label>
+      <button type="button" class="tree-btn" data-action="undo" disabled>Undo</button>
+      <button type="button" class="tree-btn" data-action="redo" disabled>Redo</button>
+    </div>
     <div class="tree-svg-holder"></div>
   `;
 
   const holder = root.querySelector<HTMLDivElement>('.tree-svg-holder')!;
   const xInput = root.querySelector<HTMLInputElement>('#tree-x')!;
+  const undoBtn = root.querySelector<HTMLButtonElement>('[data-action="undo"]')!;
+  const redoBtn = root.querySelector<HTMLButtonElement>('[data-action="redo"]')!;
 
   let current: Expr = one;
+  let selectedKey = '';
+  let currentLayout: Layout = layoutTree(current, [], '');
+  let currentSvg: SVGSVGElement | null = null;
+  let popover: HTMLDivElement | null = null;
 
-  const setExpr = (expr: Expr, publish: boolean): void => {
+  const history: Expr[] = [];
+  const future: Expr[] = [];
+
+  const setExpr = (
+    expr: Expr,
+    opts: { publish: boolean; pushHistory: boolean },
+  ): void => {
+    if (expr === current) return;
+    if (opts.pushHistory) {
+      history.push(current);
+      if (history.length > HISTORY_LIMIT) history.shift();
+      future.length = 0;
+    }
     current = expr;
     render();
-    if (publish) {
+    updateHistoryButtons();
+    if (opts.publish) {
       bus.publish(expr);
     }
   };
 
+  const undo = (): void => {
+    const prev = history.pop();
+    if (prev === undefined) return;
+    future.push(current);
+    current = prev;
+    render();
+    updateHistoryButtons();
+    bus.publish(current);
+  };
+
+  const redo = (): void => {
+    const next = future.pop();
+    if (next === undefined) return;
+    history.push(current);
+    current = next;
+    render();
+    updateHistoryButtons();
+    bus.publish(current);
+  };
+
+  const updateHistoryButtons = (): void => {
+    undoBtn.disabled = history.length === 0;
+    redoBtn.disabled = future.length === 0;
+  };
+
   const render = (): void => {
+    closePopover();
     holder.innerHTML = '';
     const xVal = Number(xInput.value);
-    const layout = layoutTree(current, []);
-    const svg = renderSvg(layout, Number.isFinite(xVal) ? xVal : undefined, (path) => {
-      setExpr(mutateAt(current, path), true);
-    });
-    holder.appendChild(svg);
+    currentLayout = layoutTree(current, [], '');
+
+    // Re-anchor selection to a still-valid path; fallback to ancestors.
+    selectedKey = clampSelection(currentLayout, selectedKey);
+
+    currentSvg = renderSvg(
+      currentLayout,
+      Number.isFinite(xVal) ? xVal : undefined,
+      selectedKey,
+    );
+    holder.appendChild(currentSvg);
   };
 
   xInput.addEventListener('input', render);
 
+  // Delegated SVG click → select + open popover.
+  holder.addEventListener('click', (e) => {
+    const target = e.target as Element | null;
+    const g = target?.closest('g.tree-node') as SVGGElement | null;
+    if (!g || !holder.contains(g)) return;
+    const key = g.getAttribute('data-path') ?? '';
+    e.stopPropagation();
+    selectedKey = key;
+    updateSelectionClass();
+    currentSvg?.focus();
+    openPopoverAt(key);
+  });
+
+  // Click outside closes popover.
+  document.addEventListener('mousedown', (e) => {
+    if (!popover) return;
+    const t = e.target as Node;
+    if (popover.contains(t)) return;
+    if (holder.contains(t)) return;
+    closePopover();
+  });
+
+  holder.addEventListener('keydown', (e) => {
+    if (!currentSvg) return;
+    const key = e.key;
+
+    if ((e.ctrlKey || e.metaKey) && (key === 'z' || key === 'Z')) {
+      e.preventDefault();
+      if (e.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (key === 'y' || key === 'Y')) {
+      e.preventDefault();
+      redo();
+      return;
+    }
+
+    if (key === 'Escape') {
+      if (popover) closePopover();
+      else {
+        selectedKey = '';
+        updateSelectionClass();
+      }
+      e.preventDefault();
+      return;
+    }
+
+    if (key === 'Enter' || key === ' ') {
+      e.preventDefault();
+      openPopoverAt(selectedKey);
+      return;
+    }
+
+    if (key === '1') {
+      e.preventDefault();
+      applyKind(selectedKey, 'one');
+      return;
+    }
+    if (key === 'x' || key === 'X') {
+      e.preventDefault();
+      applyKind(selectedKey, 'var');
+      return;
+    }
+    if (key === 'f' || key === 'F') {
+      e.preventDefault();
+      applyKind(selectedKey, 'f');
+      return;
+    }
+
+    if (key === 'ArrowUp') {
+      e.preventDefault();
+      if (selectedKey.length > 0) {
+        selectedKey = selectedKey.slice(0, -1);
+        updateSelectionClass();
+      }
+      return;
+    }
+    if (key === 'ArrowDown') {
+      e.preventDefault();
+      const node = findLayout(currentLayout, selectedKey);
+      if (node?.children) {
+        selectedKey = selectedKey + 'L';
+        updateSelectionClass();
+      }
+      return;
+    }
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      e.preventDefault();
+      if (selectedKey.length === 0) return;
+      const want: Step = key === 'ArrowLeft' ? 'L' : 'R';
+      selectedKey = selectedKey.slice(0, -1) + want;
+      updateSelectionClass();
+      return;
+    }
+  });
+
+  undoBtn.addEventListener('click', undo);
+  redoBtn.addEventListener('click', redo);
+
+  const applyKind = (pathKey: string, kind: NodeKind): void => {
+    const node = findLayout(currentLayout, pathKey);
+    if (!node) return;
+    if (node.expr.type === kind) {
+      // Already this kind — still close popover for feedback.
+      closePopover();
+      return;
+    }
+    const replacement: Expr =
+      kind === 'one' ? one : kind === 'var' ? varX : f(one, one);
+    const next = replaceAt(current, keyToPath(pathKey), () => replacement);
+    closePopover();
+    setExpr(next, { publish: true, pushHistory: true });
+  };
+
+  const updateSelectionClass = (): void => {
+    if (!currentSvg) return;
+    const prev = currentSvg.querySelectorAll('g.tree-node.is-selected');
+    prev.forEach((el) => el.classList.remove('is-selected'));
+    const sel = currentSvg.querySelector(
+      `g.tree-node[data-path="${cssEscapeKey(selectedKey)}"]`,
+    );
+    if (sel) sel.classList.add('is-selected');
+  };
+
+  const openPopoverAt = (pathKey: string): void => {
+    closePopover();
+    if (!currentSvg) return;
+    const node = findLayout(currentLayout, pathKey);
+    if (!node) return;
+    const g = currentSvg.querySelector<SVGGElement>(
+      `g.tree-node[data-path="${cssEscapeKey(pathKey)}"]`,
+    );
+    if (!g) return;
+
+    const pop = document.createElement('div');
+    pop.className = 'tree-popover';
+    pop.setAttribute('role', 'menu');
+    const currentKind: NodeKind =
+      node.expr.type === 'one' ? 'one' : node.expr.type === 'var' ? 'var' : 'f';
+    const make = (kind: NodeKind, label: string) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tree-popover-btn';
+      b.textContent = label;
+      b.dataset.kind = kind;
+      if (kind === currentKind) {
+        b.setAttribute('aria-pressed', 'true');
+        b.disabled = true;
+      }
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        applyKind(pathKey, kind);
+      });
+      return b;
+    };
+    pop.appendChild(make('one', '1'));
+    pop.appendChild(make('var', 'x'));
+    pop.appendChild(make('f', 'f'));
+
+    // Position relative to the holder.
+    holder.appendChild(pop);
+    const gRect = g.getBoundingClientRect();
+    const hRect = holder.getBoundingClientRect();
+    const pRect = pop.getBoundingClientRect();
+    const left = gRect.left - hRect.left + gRect.width / 2 - pRect.width / 2;
+    const top = gRect.bottom - hRect.top + 6;
+    pop.style.left = `${Math.max(4, left)}px`;
+    pop.style.top = `${top}px`;
+    popover = pop;
+  };
+
+  const closePopover = (): void => {
+    if (popover && popover.parentNode) {
+      popover.parentNode.removeChild(popover);
+    }
+    popover = null;
+  };
+
   bus.subscribe((expr) => {
     if (expr !== current) {
       current = expr;
+      // External changes don't participate in undo/redo history.
       render();
+      updateHistoryButtons();
     }
   });
 
   render();
 }
 
-function layoutTree(expr: Expr, path: Path): Layout {
+// ---------- layout / render ----------
+
+function layoutTree(expr: Expr, path: Path, pathKey: string): Layout {
   if (expr.type !== 'f') {
     return {
       expr,
       path,
+      pathKey,
       x: 0,
       y: 0,
       width: NODE_W,
     };
   }
-  const left = layoutTree(expr.left, [...path, 'L']);
-  const right = layoutTree(expr.right, [...path, 'R']);
+  const left = layoutTree(expr.left, [...path, 'L'], pathKey + 'L');
+  const right = layoutTree(expr.right, [...path, 'R'], pathKey + 'R');
   const width = left.width + right.width + GAP_X;
   left.x = 0;
   right.x = left.width + GAP_X;
@@ -92,6 +338,7 @@ function layoutTree(expr: Expr, path: Path): Layout {
   return {
     expr,
     path,
+    pathKey,
     x: (width - NODE_W) / 2,
     y: 0,
     width,
@@ -110,17 +357,16 @@ function shift(layout: Layout, dx: number, dy: number): void {
 function renderSvg(
   layout: Layout,
   xVal: number | undefined,
-  onNodeClick: (path: Path) => void,
+  selectedKey: string,
 ): SVGSVGElement {
   const padding = 16;
   const width = layout.width + padding * 2;
-  const height = measureHeight(layout) + padding * 2;
-
+  const height = measureHeight(layout) + padding * 2 + 14; // room for value label below
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('class', 'tree-svg');
-
-  drawNode(svg, layout, padding, padding, xVal, onNodeClick);
+  svg.setAttribute('tabindex', '0');
+  drawNode(svg, layout, padding, padding, xVal, selectedKey);
   return svg;
 }
 
@@ -140,7 +386,7 @@ function drawNode(
   offsetX: number,
   offsetY: number,
   xVal: number | undefined,
-  onNodeClick: (path: Path) => void,
+  selectedKey: string,
 ): void {
   const cx = layout.x + offsetX + NODE_W / 2;
   const cy = layout.y + offsetY + NODE_H / 2;
@@ -160,13 +406,11 @@ function drawNode(
   }
 
   const g = document.createElementNS(SVG_NS, 'g');
-  g.setAttribute('class', `tree-node tree-node-${layout.expr.type}`);
+  const selClass = layout.pathKey === selectedKey ? ' is-selected' : '';
+  g.setAttribute('class', `tree-node tree-node-${layout.expr.type}${selClass}`);
   g.setAttribute('transform', `translate(${layout.x + offsetX}, ${layout.y + offsetY})`);
+  g.setAttribute('data-path', layout.pathKey);
   g.style.cursor = 'pointer';
-  g.addEventListener('click', (e) => {
-    e.stopPropagation();
-    onNodeClick(layout.path);
-  });
 
   const rect = document.createElementNS(SVG_NS, 'rect');
   rect.setAttribute('width', String(NODE_W));
@@ -184,7 +428,6 @@ function drawNode(
     layout.expr.type === 'one' ? '1' : layout.expr.type === 'var' ? 'x' : 'f';
   g.appendChild(label);
 
-  // Per-node evaluated value (small text below).
   const needsX = containsVar(layout.expr);
   const v = tryEvaluate(layout.expr, needsX ? xVal : undefined);
   if (v !== undefined && Number.isFinite(v)) {
@@ -201,7 +444,7 @@ function drawNode(
 
   if (layout.children) {
     for (const child of layout.children) {
-      drawNode(svg, child, offsetX, offsetY, xVal, onNodeClick);
+      drawNode(svg, child, offsetX, offsetY, xVal, selectedKey);
     }
   }
 }
@@ -213,18 +456,39 @@ function formatShort(v: number): string {
   return Number(v.toFixed(3)).toString();
 }
 
-/** Replace the subtree at `path` with a mutation:
- *  - `1` → `x`
- *  - `x` → `(f 1 1)`
- *  - `(f _ _)` → `1`
- */
-function mutateAt(root: Expr, path: Path): Expr {
-  const replace = (node: Expr): Expr => {
-    if (node.type === 'one') return varX;
-    if (node.type === 'var') return f(one, one);
-    return one;
-  };
-  return replaceAt(root, path, replace);
+// ---------- path helpers ----------
+
+function keyToPath(key: string): Path {
+  const path: Step[] = [];
+  for (const ch of key) {
+    path.push(ch === 'L' ? 'L' : 'R');
+  }
+  return path;
+}
+
+function findLayout(root: Layout, key: string): Layout | null {
+  if (key === root.pathKey) return root;
+  if (!root.children) return null;
+  for (const c of root.children) {
+    if (key === c.pathKey || key.startsWith(c.pathKey)) {
+      const hit = findLayout(c, key);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+function clampSelection(root: Layout, key: string): string {
+  let k = key;
+  while (k.length > 0 && !findLayout(root, k)) {
+    k = k.slice(0, -1);
+  }
+  return k;
+}
+
+function cssEscapeKey(key: string): string {
+  // Keys only contain L and R, safe to embed in attribute selector directly.
+  return key;
 }
 
 function replaceAt(root: Expr, path: Path, fn: (node: Expr) => Expr): Expr {
