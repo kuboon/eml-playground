@@ -41,4 +41,20 @@ export const presets: readonly Preset[] = [
     reference: (x) => x,
     domain: [0.1, 5],
   },
+  {
+    name: 'π (近似)',
+    description:
+      '円周率 π ≈ 3.1412。論文では ln(−1)/i などの複素数経由で厳密に構成されるが、実数評価器向けに 12 ノードで作った近似式（誤差 ≈ 4×10⁻⁴）',
+    source:
+      '(f 1 (f (f (f (f 1 (f (f 1 1) 1)) (f (f 1 1) 1)) 1) (f 1 (f 1 1))))',
+  },
+  {
+    name: 'sin(x) (近似)',
+    description:
+      '正弦関数 sin(x)。論文では Euler の公式 sin x = (eⁱˣ − e⁻ⁱˣ)/(2i) 経由で 100 段超の EML ツリーとなるため、ここでは原点近傍の近似式（sin x ≈ x） を表示',
+    source:
+      '(f (f x 1) (f (f (f x 1) (f x 1)) (f x (f x 1))))',
+    reference: Math.sin,
+    domain: [-Math.PI, Math.PI],
+  },
 ];
