@@ -11,7 +11,8 @@
 // Pure module: no DOM imports.
 
 import type { Expr } from './ast.ts';
-import { f, one, varX } from './ast.ts';
+import { f, one, substituteVar, varX } from './ast.ts';
+import { getUserMacro } from './macros.ts';
 
 export type ParseOk = { readonly ok: true; readonly expr: Expr };
 export type ParseErr = {
@@ -102,6 +103,16 @@ function parseExpr(c: Cursor): Expr {
     const word = readWord(c);
     if (word === 'x' || word === 'X') return varX;
     if (word === 'e') return expE();
+    const userMacro = getUserMacro(word);
+    if (userMacro && userMacro.arity === 0) {
+      return userMacro.body;
+    }
+    if (userMacro && userMacro.arity === 1) {
+      throw new ParseError(
+        "'" + word + "' は 1 引数のマクロです。'(" + word + " <expr>)' として使ってください",
+        start,
+      );
+    }
     throw new ParseError("不明な識別子 '" + word + "'", start);
   }
 
@@ -140,7 +151,18 @@ function parseExpr(c: Cursor): Expr {
       const arg = parseExpr(c);
       result = expId(arg);
     } else {
-      throw new ParseError("不明な演算子 '" + head + "'", headAt);
+      const userMacro = getUserMacro(head);
+      if (userMacro && userMacro.arity === 1) {
+        const arg = parseExpr(c);
+        result = substituteVar(userMacro.body, arg);
+      } else if (userMacro && userMacro.arity === 0) {
+        throw new ParseError(
+          "'" + head + "' は定数マクロです。括弧なしで使ってください",
+          headAt,
+        );
+      } else {
+        throw new ParseError("不明な演算子 '" + head + "'", headAt);
+      }
     }
 
     c.skipWs();

@@ -25,6 +25,18 @@ export function containsVar(expr: Expr): boolean {
   }
 }
 
+/** Substitute every occurrence of `x` in `expr` with `arg`. */
+export function substituteVar(expr: Expr, arg: Expr): Expr {
+  switch (expr.type) {
+    case 'one':
+      return expr;
+    case 'var':
+      return arg;
+    case 'f':
+      return f(substituteVar(expr.left, arg), substituteVar(expr.right, arg));
+  }
+}
+
 /** Number of nodes in the tree (K-complexity from the paper). */
 export function nodeCount(expr: Expr): number {
   switch (expr.type) {

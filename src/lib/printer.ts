@@ -14,6 +14,18 @@ export function toSource(expr: Expr): string {
   }
 }
 
+/** Reverse Polish Notation: operands before the `f` operator. */
+export function toRpn(expr: Expr): string {
+  switch (expr.type) {
+    case 'one':
+      return '1';
+    case 'var':
+      return 'x';
+    case 'f':
+      return toRpn(expr.left) + ' ' + toRpn(expr.right) + ' f';
+  }
+}
+
 /** Multi-line indented form, handy for debugging/tree view. */
 export function toIndented(expr: Expr, indent = 0): string {
   const pad = '  '.repeat(indent);

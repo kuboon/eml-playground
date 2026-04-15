@@ -306,6 +306,62 @@ input[type='number'] {
   stroke-dasharray: 4 4;
 }
 
+.tree-save {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 12px;
+  flex-wrap: wrap;
+}
+
+.tree-save-msg {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.tree-save-msg.ok {
+  color: var(--ok);
+}
+
+.tree-save-msg.error {
+  color: var(--error);
+}
+
+textarea[readonly] {
+  opacity: 0.85;
+  cursor: default;
+}
+
+.preset-item {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.preset-item .preset-button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.preset-delete {
+  flex: 0 0 auto;
+  width: 32px;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.preset-delete:hover {
+  border-color: var(--error);
+  color: var(--error);
+  background: var(--panel-bg);
+}
+
 .tree-svg-holder {
   overflow-x: auto;
   padding: 8px 0;

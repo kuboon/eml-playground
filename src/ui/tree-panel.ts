@@ -7,8 +7,13 @@
 import type { Expr } from '../lib/ast.ts';
 import { containsVar, f, one, varX } from '../lib/ast.ts';
 import { tryEvaluate } from '../lib/evaluator.ts';
+import {
+  addUserMacro,
+  hasUserMacro,
+  validateMacroName,
+} from '../lib/macros.ts';
 import { parse } from '../lib/parser.ts';
-import { toSource } from '../lib/printer.ts';
+import { toRpn, toSource } from '../lib/printer.ts';
 import type { ExpressionBus } from './pubsub.ts';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -59,7 +64,15 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
       <span>S 式</span>
       <textarea id="eval-input" spellcheck="false" autocapitalize="off" autocomplete="off" rows="2">(f 1 1)</textarea>
     </label>
+    <label class="field">
+      <span>RPN (逆ポーランド記法)</span>
+      <textarea id="eval-rpn" spellcheck="false" rows="2" readonly></textarea>
+    </label>
     <div class="status" id="eval-status"></div>
+    <div class="tree-save">
+      <button type="button" class="tree-btn" id="tree-save-btn">ギャラリーに追加</button>
+      <span class="tree-save-msg" id="tree-save-msg"></span>
+    </div>
     <p class="hint">
       ノードをクリック (または <kbd>Enter</kbd>) で <code>1</code> / <code>x</code> / <code>f</code> /
       <code>e</code> / <code>exp</code> / <code>ln</code> / <code>id</code> を選択。
@@ -78,11 +91,14 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
   `;
 
   const input = root.querySelector<HTMLTextAreaElement>('#eval-input')!;
+  const rpnOut = root.querySelector<HTMLTextAreaElement>('#eval-rpn')!;
   const status = root.querySelector<HTMLDivElement>('#eval-status')!;
   const holder = root.querySelector<HTMLDivElement>('.tree-svg-holder')!;
   const xInput = root.querySelector<HTMLInputElement>('#tree-x')!;
   const undoBtn = root.querySelector<HTMLButtonElement>('[data-action="undo"]')!;
   const redoBtn = root.querySelector<HTMLButtonElement>('[data-action="redo"]')!;
+  const saveBtn = root.querySelector<HTMLButtonElement>('#tree-save-btn')!;
+  const saveMsg = root.querySelector<HTMLSpanElement>('#tree-save-msg')!;
 
   let current: Expr = one;
   let selectedKey = '';
@@ -102,11 +118,16 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     status.className = 'status error';
   };
 
+  const syncRpn = (expr: Expr): void => {
+    rpnOut.value = toRpn(expr);
+  };
+
   const syncTextarea = (expr: Expr): void => {
     const next = toSource(expr);
     if (input.value.trim() !== next) {
       input.value = next;
     }
+    syncRpn(expr);
     setStatusOk();
   };
 
@@ -182,6 +203,7 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
       return;
     }
     setStatusOk();
+    syncRpn(result.expr);
     if (result.expr === current) return;
     // Don't sync text back to avoid clobbering user's in-progress typing
     // (e.g. macros like `(exp x)` which would normalize to `(f x 1)`).
@@ -289,6 +311,36 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
 
   undoBtn.addEventListener('click', undo);
   redoBtn.addEventListener('click', redo);
+
+  let saveMsgTimer: ReturnType<typeof setTimeout> | null = null;
+  const flashSaveMsg = (text: string, kind: 'ok' | 'error'): void => {
+    saveMsg.textContent = text;
+    saveMsg.className = `tree-save-msg ${kind}`;
+    if (saveMsgTimer !== null) clearTimeout(saveMsgTimer);
+    saveMsgTimer = setTimeout(() => {
+      saveMsg.textContent = '';
+      saveMsg.className = 'tree-save-msg';
+    }, 3000);
+  };
+
+  saveBtn.addEventListener('click', () => {
+    const raw = globalThis.prompt('関数名を入力してください (英字のみ)');
+    if (raw === null) return;
+    const name = raw.trim();
+    const err = validateMacroName(name);
+    if (err) {
+      flashSaveMsg(err, 'error');
+      return;
+    }
+    if (hasUserMacro(name)) {
+      const ok = globalThis.confirm(`'${name}' は既に存在します。上書きしますか?`);
+      if (!ok) return;
+    }
+    const macro = addUserMacro(name, current);
+    const usage =
+      macro.arity === 0 ? name : `(${name} <expr>)`;
+    flashSaveMsg(`'${name}' を追加しました (使い方: ${usage})`, 'ok');
+  });
 
   const applyKind = (pathKey: string, kind: NodeKind): void => {
     const node = findLayout(currentLayout, pathKey);
