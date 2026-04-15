@@ -21,15 +21,16 @@
 
     <main class="grid">
       <section id="gallery" class="panel"></section>
-      <section id="evaluator" class="panel"></section>
       <section id="plot" class="panel"></section>
-      <section id="tree" class="panel"></section>
+      <section id="tree" class="panel panel-wide"></section>
     </main>
 
     <footer class="site-footer">
       <p>
-        構文: <code>1</code> | <code>x</code> | <code>(f &lt;expr&gt; &lt;expr&gt;)</code>
-        — 例: <code>(f (f 1 1) 1)</code>, <code>(f x 1)</code>
+        構文: <code>1</code> | <code>x</code> | <code>e</code> |
+        <code>(f &lt;expr&gt; &lt;expr&gt;)</code> |
+        <code>(exp &lt;expr&gt;)</code> | <code>(ln &lt;expr&gt;)</code> | <code>(id &lt;expr&gt;)</code>
+        — 例: <code>(f (f 1 1) 1)</code>, <code>(exp x)</code>, <code>(ln x)</code>
       </p>
       <p>
         <a href="https://github.com/kuboon/eml-playground" target="_blank" rel="noopener">
