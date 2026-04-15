@@ -1,11 +1,14 @@
-// Visual tree builder. SVG-based.
-// - Click a node (or press Enter) to open a popover and pick 1 / x / f.
+// Merged evaluator + visual tree builder panel.
+// - S-expression textarea edits the expression directly.
+// - Click a node (or press Enter) to open a popover and pick a replacement.
 // - Arrow keys navigate the tree, 1/x/f keys apply directly.
 // - Ctrl/Cmd+Z / Shift+Z for undo/redo.
 
 import type { Expr } from '../lib/ast.ts';
 import { containsVar, f, one, varX } from '../lib/ast.ts';
 import { tryEvaluate } from '../lib/evaluator.ts';
+import { parse } from '../lib/parser.ts';
+import { toSource } from '../lib/printer.ts';
 import type { ExpressionBus } from './pubsub.ts';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -17,7 +20,7 @@ const HISTORY_LIMIT = 100;
 
 type Step = 'L' | 'R';
 type Path = readonly Step[];
-type NodeKind = 'one' | 'var' | 'f';
+type NodeKind = 'one' | 'var' | 'f' | 'e' | 'exp' | 'ln' | 'id';
 
 type Layout = {
   expr: Expr;
@@ -29,11 +32,37 @@ type Layout = {
   children?: Layout[];
 };
 
+// Build the expansion tree for a popover "shortcut" button.
+function expansionFor(kind: NodeKind): Expr {
+  switch (kind) {
+    case 'one':
+      return one;
+    case 'var':
+      return varX;
+    case 'f':
+      return f(one, one);
+    case 'e':
+      return f(one, one);
+    case 'exp':
+      return f(varX, one);
+    case 'ln':
+      return f(one, f(f(one, varX), one));
+    case 'id':
+      return f(one, f(f(one, f(varX, one)), one));
+  }
+}
+
 export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
   root.innerHTML = `
-    <h2>ツリー</h2>
+    <h2>評価器・ツリー</h2>
+    <label class="field">
+      <span>S 式</span>
+      <textarea id="eval-input" spellcheck="false" autocapitalize="off" autocomplete="off" rows="2">(f 1 1)</textarea>
+    </label>
+    <div class="status" id="eval-status"></div>
     <p class="hint">
-      ノードをクリック (または <kbd>Enter</kbd>) で <code>1</code> / <code>x</code> / <code>f</code> を選択。
+      ノードをクリック (または <kbd>Enter</kbd>) で <code>1</code> / <code>x</code> / <code>f</code> /
+      <code>e</code> / <code>exp</code> / <code>ln</code> / <code>id</code> を選択。
       矢印キーで移動、<code>1</code>/<code>x</code>/<code>f</code> キーで直接変更、
       <kbd>Ctrl</kbd>+<kbd>Z</kbd> で取り消し。
     </p>
@@ -48,6 +77,8 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     <div class="tree-svg-holder"></div>
   `;
 
+  const input = root.querySelector<HTMLTextAreaElement>('#eval-input')!;
+  const status = root.querySelector<HTMLDivElement>('#eval-status')!;
   const holder = root.querySelector<HTMLDivElement>('.tree-svg-holder')!;
   const xInput = root.querySelector<HTMLInputElement>('#tree-x')!;
   const undoBtn = root.querySelector<HTMLButtonElement>('[data-action="undo"]')!;
@@ -62,9 +93,26 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
   const history: Expr[] = [];
   const future: Expr[] = [];
 
+  const setStatusOk = (): void => {
+    status.textContent = 'OK';
+    status.className = 'status ok';
+  };
+  const setStatusError = (msg: string): void => {
+    status.textContent = msg;
+    status.className = 'status error';
+  };
+
+  const syncTextarea = (expr: Expr): void => {
+    const next = toSource(expr);
+    if (input.value.trim() !== next) {
+      input.value = next;
+    }
+    setStatusOk();
+  };
+
   const setExpr = (
     expr: Expr,
-    opts: { publish: boolean; pushHistory: boolean },
+    opts: { publish: boolean; pushHistory: boolean; syncText: boolean },
   ): void => {
     if (expr === current) return;
     if (opts.pushHistory) {
@@ -73,7 +121,8 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
       future.length = 0;
     }
     current = expr;
-    render();
+    if (opts.syncText) syncTextarea(expr);
+    renderTree();
     updateHistoryButtons();
     if (opts.publish) {
       bus.publish(expr);
@@ -85,7 +134,8 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     if (prev === undefined) return;
     future.push(current);
     current = prev;
-    render();
+    syncTextarea(current);
+    renderTree();
     updateHistoryButtons();
     bus.publish(current);
   };
@@ -95,7 +145,8 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     if (next === undefined) return;
     history.push(current);
     current = next;
-    render();
+    syncTextarea(current);
+    renderTree();
     updateHistoryButtons();
     bus.publish(current);
   };
@@ -105,7 +156,7 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     redoBtn.disabled = future.length === 0;
   };
 
-  const render = (): void => {
+  const renderTree = (): void => {
     closePopover();
     holder.innerHTML = '';
     const xVal = Number(xInput.value);
@@ -122,7 +173,22 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     holder.appendChild(currentSvg);
   };
 
-  xInput.addEventListener('input', render);
+  // ---- textarea handling ----
+
+  input.addEventListener('input', () => {
+    const result = parse(input.value);
+    if (!result.ok) {
+      setStatusError(`エラー (位置 ${result.position}): ${result.message}`);
+      return;
+    }
+    setStatusOk();
+    if (result.expr === current) return;
+    // Don't sync text back to avoid clobbering user's in-progress typing
+    // (e.g. macros like `(exp x)` which would normalize to `(f x 1)`).
+    setExpr(result.expr, { publish: true, pushHistory: true, syncText: false });
+  });
+
+  xInput.addEventListener('input', renderTree);
 
   // Delegated SVG click → select + open popover.
   holder.addEventListener('click', (e) => {
@@ -227,16 +293,10 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
   const applyKind = (pathKey: string, kind: NodeKind): void => {
     const node = findLayout(currentLayout, pathKey);
     if (!node) return;
-    if (node.expr.type === kind) {
-      // Already this kind — still close popover for feedback.
-      closePopover();
-      return;
-    }
-    const replacement: Expr =
-      kind === 'one' ? one : kind === 'var' ? varX : f(one, one);
+    const replacement = expansionFor(kind);
     const next = replaceAt(current, keyToPath(pathKey), () => replacement);
     closePopover();
-    setExpr(next, { publish: true, pushHistory: true });
+    setExpr(next, { publish: true, pushHistory: true, syncText: true });
   };
 
   const updateSelectionClass = (): void => {
@@ -270,6 +330,7 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
       b.className = 'tree-popover-btn';
       b.textContent = label;
       b.dataset.kind = kind;
+      // Only the primitive kinds (one/var/f) have a direct "pressed" state.
       if (kind === currentKind) {
         b.setAttribute('aria-pressed', 'true');
         b.disabled = true;
@@ -283,6 +344,10 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     pop.appendChild(make('one', '1'));
     pop.appendChild(make('var', 'x'));
     pop.appendChild(make('f', 'f'));
+    pop.appendChild(make('e', 'e'));
+    pop.appendChild(make('exp', 'exp'));
+    pop.appendChild(make('ln', 'ln'));
+    pop.appendChild(make('id', 'id'));
 
     // Position relative to the holder.
     holder.appendChild(pop);
@@ -306,13 +371,15 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
   bus.subscribe((expr) => {
     if (expr !== current) {
       current = expr;
+      syncTextarea(expr);
       // External changes don't participate in undo/redo history.
-      render();
+      renderTree();
       updateHistoryButtons();
     }
   });
 
-  render();
+  syncTextarea(current);
+  renderTree();
 }
 
 // ---------- layout / render ----------

@@ -1,6 +1,13 @@
 // Lisp-style S-expression parser for the eml playground.
 // Grammar:
-//   expr := '1' | 'x' | '(' 'f' expr expr ')'
+//   expr := '1' | 'x' | 'e' | '(' 'f' expr expr ')'
+//         | '(' 'exp' expr ')' | '(' 'ln' expr ')' | '(' 'id' expr ')'
+// The `e`, `exp`, `ln`, `id` forms are parse-time macros that expand into
+// the canonical `f`-only AST:
+//   e         → (f 1 1)
+//   (exp E)   → (f E 1)
+//   (ln E)    → (f 1 (f (f 1 E) 1))
+//   (id E)    → (f 1 (f (f 1 (f E 1)) 1))
 // Pure module: no DOM imports.
 
 import type { Expr } from './ast.ts';
@@ -50,6 +57,33 @@ class ParseError extends Error {
   }
 }
 
+function isAlpha(ch: string): boolean {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+
+function readWord(c: Cursor): string {
+  let s = '';
+  while (c.pos < c.src.length && isAlpha(c.src.charAt(c.pos))) {
+    s += c.src.charAt(c.pos);
+    c.pos++;
+  }
+  return s;
+}
+
+// Macro expansions for shortcut keywords.
+function expE(): Expr {
+  return f(one, one);
+}
+function expExp(arg: Expr): Expr {
+  return f(arg, one);
+}
+function expLn(arg: Expr): Expr {
+  return f(one, f(f(one, arg), one));
+}
+function expId(arg: Expr): Expr {
+  return f(one, f(f(one, f(arg, one)), one));
+}
+
 function parseExpr(c: Cursor): Expr {
   c.skipWs();
   if (c.eof()) {
@@ -63,9 +97,12 @@ function parseExpr(c: Cursor): Expr {
     return one;
   }
 
-  if (ch === 'x' || ch === 'X') {
-    c.pos++;
-    return varX;
+  if (isAlpha(ch)) {
+    const start = c.pos;
+    const word = readWord(c);
+    if (word === 'x' || word === 'X') return varX;
+    if (word === 'e') return expE();
+    throw new ParseError("不明な識別子 '" + word + "'", start);
   }
 
   if (ch === '(') {
@@ -73,29 +110,45 @@ function parseExpr(c: Cursor): Expr {
     c.pos++;
     c.skipWs();
 
-    // Must be 'f' next.
-    if (c.eof() || c.peek() !== 'f') {
-      throw new ParseError("'(' の直後は 'f' が必要です", c.pos);
+    if (c.eof() || !isAlpha(c.peek())) {
+      throw new ParseError("'(' の直後は演算子名が必要です", c.pos);
     }
-    c.pos++;
+    const headAt = c.pos;
+    const head = readWord(c);
 
-    // Require whitespace after 'f' for readability.
-    const afterF = c.pos;
+    // Require whitespace after the head keyword for readability,
+    // unless the next char already ends the list (empty arg → error below).
+    const afterHead = c.pos;
     c.skipWs();
-    if (c.pos === afterF && !(c.peek() === '(' || c.peek() === ')')) {
-      throw new ParseError("'f' の後に空白が必要です", c.pos);
+    if (c.pos === afterHead && !(c.peek() === '(' || c.peek() === ')')) {
+      throw new ParseError("'" + head + "' の後に空白が必要です", c.pos);
     }
 
-    const left = parseExpr(c);
-    c.skipWs();
-    const right = parseExpr(c);
-    c.skipWs();
+    let result: Expr;
+    if (head === 'f') {
+      const left = parseExpr(c);
+      c.skipWs();
+      const right = parseExpr(c);
+      result = f(left, right);
+    } else if (head === 'exp') {
+      const arg = parseExpr(c);
+      result = expExp(arg);
+    } else if (head === 'ln') {
+      const arg = parseExpr(c);
+      result = expLn(arg);
+    } else if (head === 'id') {
+      const arg = parseExpr(c);
+      result = expId(arg);
+    } else {
+      throw new ParseError("不明な演算子 '" + head + "'", headAt);
+    }
 
+    c.skipWs();
     if (c.eof() || c.peek() !== ')') {
       throw new ParseError("')' が不足しています (対応する '(' は位置 " + openAt + ')', c.pos);
     }
     c.pos++;
-    return f(left, right);
+    return result;
   }
 
   if (ch === ')') {
