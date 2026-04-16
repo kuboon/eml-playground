@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: '/eml-playground/',
+  base: process.env.VITE_BASE_PATH ?? '/eml-playground/',
 });
