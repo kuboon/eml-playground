@@ -1,0 +1,119 @@
+name: Preview PR on GitHub Pages
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Serialize with the production deploy workflow so they don't clobber each
+# other. We let previews queue rather than cancel, so a fresh commit on the PR
+# produces an up-to-date preview.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Fork PRs don't receive a token with `pages: write`, so they can't deploy.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: main-src
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          path: pr-src
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Build main (root)
+        working-directory: main-src
+        env:
+          VITE_BASE_PATH: /eml-playground/
+        run: |
+          npm install
+          npm run build
+
+      - name: Build PR branch (preview)
+        working-directory: pr-src
+        env:
+          # NOTE: head_ref may contain slashes (e.g. `claude/foo`); that's
+          # fine both as a filesystem path and as a URL path segment.
+          VITE_BASE_PATH: /eml-playground/${{ github.event.pull_request.head.ref }}/
+        run: |
+          npm install
+          npm run build
+
+      - name: Assemble combined site
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          cp -r main-src/dist/. site/
+          preview_dir="site/${{ github.event.pull_request.head.ref }}"
+          mkdir -p "$preview_dir"
+          cp -r pr-src/dist/. "$preview_dir/"
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+
+  comment:
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Post preview URL
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            const url = `https://${context.repo.owner}.github.io/${context.repo.repo}/${branch}/`;
+            const marker = '<!-- eml-playground-preview -->';
+            const body = `${marker}\nプレビューをデプロイしました: ${url}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
