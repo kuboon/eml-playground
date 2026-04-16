@@ -29,7 +29,7 @@ export const presets: readonly Preset[] = [
   },
   {
     name: 'ln(x)',
-    description: '自然対数。exp と ln の入れ子で exp 部分を打ち消すイデア',
+    description: '自然対数。exp と ln の入れ子で exp 部分を打ち消すイデア。x=1 とすれば定数 0 を得られる',
     source: '(f 1 (f (f 1 x) 1))',
     reference: Math.log,
     domain: [0.1, 5],
