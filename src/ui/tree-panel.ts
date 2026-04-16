@@ -12,7 +12,7 @@ import {
   hasUserMacro,
   validateMacroName,
 } from '../lib/macros.ts';
-import { parse } from '../lib/parser.ts';
+import { parse, parseRpn } from '../lib/parser.ts';
 import { toRpn, toSource } from '../lib/printer.ts';
 import type { ExpressionBus } from './pubsub.ts';
 
@@ -66,7 +66,7 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     </label>
     <label class="field">
       <span>RPN (逆ポーランド記法)</span>
-      <textarea id="eval-rpn" spellcheck="false" rows="2" readonly></textarea>
+      <textarea id="eval-rpn" spellcheck="false" autocapitalize="off" autocomplete="off" rows="2"></textarea>
     </label>
     <div class="status" id="eval-status"></div>
     <div class="tree-save">
@@ -118,22 +118,34 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     status.className = 'status error';
   };
 
-  const syncRpn = (expr: Expr): void => {
-    rpnOut.value = toRpn(expr);
-  };
+  type TextSource = 'sexp' | 'rpn';
 
-  const syncTextarea = (expr: Expr): void => {
-    const next = toSource(expr);
-    if (input.value.trim() !== next) {
-      input.value = next;
+  // Refresh the text outputs for `expr`, skipping `skip` so we don't clobber
+  // the textarea the user is actively typing into.
+  const syncTextOutputs = (expr: Expr, skip?: TextSource): void => {
+    if (skip !== 'sexp') {
+      const next = toSource(expr);
+      if (input.value.trim() !== next) {
+        input.value = next;
+      }
     }
-    syncRpn(expr);
+    if (skip !== 'rpn') {
+      const nextRpn = toRpn(expr);
+      if (rpnOut.value.trim() !== nextRpn) {
+        rpnOut.value = nextRpn;
+      }
+    }
     setStatusOk();
   };
 
   const setExpr = (
     expr: Expr,
-    opts: { publish: boolean; pushHistory: boolean; syncText: boolean },
+    opts: {
+      publish: boolean;
+      pushHistory: boolean;
+      syncText: boolean;
+      skipSync?: TextSource;
+    },
   ): void => {
     if (expr === current) return;
     if (opts.pushHistory) {
@@ -142,7 +154,7 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
       future.length = 0;
     }
     current = expr;
-    if (opts.syncText) syncTextarea(expr);
+    if (opts.syncText) syncTextOutputs(expr, opts.skipSync);
     renderTree();
     updateHistoryButtons();
     if (opts.publish) {
@@ -155,7 +167,7 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     if (prev === undefined) return;
     future.push(current);
     current = prev;
-    syncTextarea(current);
+    syncTextOutputs(current);
     renderTree();
     updateHistoryButtons();
     bus.publish(current);
@@ -166,7 +178,7 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
     if (next === undefined) return;
     history.push(current);
     current = next;
-    syncTextarea(current);
+    syncTextOutputs(current);
     renderTree();
     updateHistoryButtons();
     bus.publish(current);
@@ -203,11 +215,37 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
       return;
     }
     setStatusOk();
-    syncRpn(result.expr);
+    // Keep the RPN view live even when the S-expression hasn't changed
+    // semantically (e.g. whitespace).
+    syncTextOutputs(result.expr, 'sexp');
     if (result.expr === current) return;
-    // Don't sync text back to avoid clobbering user's in-progress typing
-    // (e.g. macros like `(exp x)` which would normalize to `(f x 1)`).
-    setExpr(result.expr, { publish: true, pushHistory: true, syncText: false });
+    // Don't sync the S-expression textarea back to avoid clobbering the
+    // user's in-progress typing (e.g. macros like `(exp x)` which would
+    // normalize to `(f x 1)`).
+    setExpr(result.expr, {
+      publish: true,
+      pushHistory: true,
+      syncText: true,
+      skipSync: 'sexp',
+    });
+  });
+
+  rpnOut.addEventListener('input', () => {
+    const result = parseRpn(rpnOut.value);
+    if (!result.ok) {
+      setStatusError(`RPN エラー (位置 ${result.position}): ${result.message}`);
+      return;
+    }
+    setStatusOk();
+    // Refresh the S-expression textarea even if the tree is unchanged.
+    syncTextOutputs(result.expr, 'rpn');
+    if (result.expr === current) return;
+    setExpr(result.expr, {
+      publish: true,
+      pushHistory: true,
+      syncText: true,
+      skipSync: 'rpn',
+    });
   });
 
   xInput.addEventListener('input', renderTree);
@@ -423,14 +461,14 @@ export function mountTreePanel(root: HTMLElement, bus: ExpressionBus): void {
   bus.subscribe((expr) => {
     if (expr !== current) {
       current = expr;
-      syncTextarea(expr);
+      syncTextOutputs(expr);
       // External changes don't participate in undo/redo history.
       renderTree();
       updateHistoryButtons();
     }
   });
 
-  syncTextarea(current);
+  syncTextOutputs(current);
   renderTree();
 }
 

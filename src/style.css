@@ -327,11 +327,6 @@ input[type='number'] {
   color: var(--error);
 }
 
-textarea[readonly] {
-  opacity: 0.85;
-  cursor: default;
-}
-
 .preset-item {
   display: flex;
   align-items: stretch;

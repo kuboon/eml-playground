@@ -180,6 +180,140 @@ function parseExpr(c: Cursor): Expr {
   throw new ParseError("予期しない文字 '" + ch + "'", c.pos);
 }
 
+/**
+ * Parse a Reverse Polish Notation form into an Expr.
+ *
+ * Tokens are whitespace-separated words, each of which either pushes or
+ * reduces operands on a stack:
+ *   `1`            push `one`
+ *   `x`            push `varX`
+ *   `e`            push `(f 1 1)`
+ *   `f`            pop two operands, push `(f left right)`
+ *   `exp`/`ln`/`id` pop one operand, apply the macro expansion
+ *   user macro (arity 0) push its body
+ *   user macro (arity 1) pop one operand, substitute into its body
+ * A successful parse must leave exactly one expression on the stack.
+ */
+export function parseRpn(source: string): ParseResult {
+  const stack: Expr[] = [];
+  let pos = 0;
+  const len = source.length;
+
+  const skipWs = (): void => {
+    while (pos < len) {
+      const c = source.charCodeAt(pos);
+      if (c === 32 || c === 9 || c === 10 || c === 13) pos++;
+      else break;
+    }
+  };
+
+  try {
+    while (true) {
+      skipWs();
+      if (pos >= len) break;
+      const tokStart = pos;
+      const ch = source.charAt(pos);
+
+      let token: string;
+      if (ch === '1') {
+        token = '1';
+        pos++;
+      } else if (isAlpha(ch)) {
+        let s = '';
+        while (pos < len && isAlpha(source.charAt(pos))) {
+          s += source.charAt(pos);
+          pos++;
+        }
+        token = s;
+      } else {
+        throw new ParseError("予期しない文字 '" + ch + "'", tokStart);
+      }
+
+      if (token === '1') {
+        stack.push(one);
+        continue;
+      }
+      if (token === 'x' || token === 'X') {
+        stack.push(varX);
+        continue;
+      }
+      if (token === 'e') {
+        stack.push(f(one, one));
+        continue;
+      }
+      if (token === 'f') {
+        if (stack.length < 2) {
+          throw new ParseError("'f' に対する被演算子が不足しています", tokStart);
+        }
+        const right = stack.pop()!;
+        const left = stack.pop()!;
+        stack.push(f(left, right));
+        continue;
+      }
+      if (token === 'exp') {
+        if (stack.length < 1) {
+          throw new ParseError("'exp' に対する被演算子が不足しています", tokStart);
+        }
+        const arg = stack.pop()!;
+        stack.push(f(arg, one));
+        continue;
+      }
+      if (token === 'ln') {
+        if (stack.length < 1) {
+          throw new ParseError("'ln' に対する被演算子が不足しています", tokStart);
+        }
+        const arg = stack.pop()!;
+        stack.push(f(one, f(f(one, arg), one)));
+        continue;
+      }
+      if (token === 'id') {
+        if (stack.length < 1) {
+          throw new ParseError("'id' に対する被演算子が不足しています", tokStart);
+        }
+        const arg = stack.pop()!;
+        stack.push(f(one, f(f(one, f(arg, one)), one)));
+        continue;
+      }
+
+      const macro = getUserMacro(token);
+      if (macro && macro.arity === 0) {
+        stack.push(macro.body);
+        continue;
+      }
+      if (macro && macro.arity === 1) {
+        if (stack.length < 1) {
+          throw new ParseError(
+            "'" + token + "' に対する被演算子が不足しています",
+            tokStart,
+          );
+        }
+        const arg = stack.pop()!;
+        stack.push(substituteVar(macro.body, arg));
+        continue;
+      }
+
+      throw new ParseError("不明なトークン '" + token + "'", tokStart);
+    }
+
+    if (stack.length === 0) {
+      return { ok: false, message: '式が空です', position: 0 };
+    }
+    if (stack.length > 1) {
+      return {
+        ok: false,
+        message: `被演算子が余っています (残り ${stack.length} 個)`,
+        position: len,
+      };
+    }
+    return { ok: true, expr: stack[0] };
+  } catch (err) {
+    if (err instanceof ParseError) {
+      return { ok: false, message: err.message, position: err.position };
+    }
+    throw err;
+  }
+}
+
 export function parse(source: string): ParseResult {
   const cursor = new Cursor(source);
   try {
